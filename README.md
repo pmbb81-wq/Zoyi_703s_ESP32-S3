@@ -220,6 +220,232 @@ Jezeli chodzi o czytanie pomiaru na glos to jest to dopiero pierwsza wersja. Nie
 
 <img width="1126" height="2000" alt="2026-05-06_21 33 17" src="https://github.com/user-attachments/assets/15d97e63-cdeb-4846-ad01-f7cef7b53ea8" />
 
+Wrzucam kod aby nie przepadl bo szkoda by bylo :)
+
+```C++
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <TFT_eSPI.h>
+#include <SPI.h>
+
+#define TFT_BL 14
+
+// --- KONFIGURACJA ---
+const char* ssid_ap = "ZOYI_703s_PRO";
+const char* pass_ap = "12345678";
+
+WebServer server(80); 
+TFT_eSPI tft = TFT_eSPI();
+TFT_eSprite img = TFT_eSprite(&tft);
+
+// --- DANE POMIAROWE ---
+String displayValue = "0.0000";
+String currentUnit = "V";       
+String currentLabel = "DC Voltage"; 
+float lastNumericValue = 0.0;
+float currentFloat = 0.0;
+String serialBuffer = ""; 
+const float threshold = 0.0005; 
+
+// --- STATYSTYKI ---
+float valMin = 999999.0;
+float valMax = -999999.0;
+double valSum = 0.0;
+long sampleCount = 0;
+
+void resetStats() {
+    valMin = 999999.0; valMax = -999999.0; valSum = 0.0; sampleCount = 0;
+}
+
+void updateStats(float val) {
+    if (val < valMin) valMin = val;
+    if (val > valMax) valMax = val;
+    valSum += val;
+    sampleCount++;
+}
+
+// Kolor od zielonego (0%) do czerwonego (100%)
+uint16_t getGradientColor(int percent) {
+    percent = constrain(percent, 0, 100);
+    uint8_t r = (31 * percent) / 100;
+    uint8_t g = (63 * (100 - percent)) / 100;
+    return (r << 11) | (g << 5);
+}
+
+// --- GUI TFT ---
+void drawUI() {
+    img.fillSprite(TFT_BLACK);
+    
+    // Ramka
+    img.drawRoundRect(5, 5, 470, 310, 15, 0x03E0); 
+    img.fillRoundRect(10, 10, 460, 35, 10, 0x0180); 
+    img.setTextColor(TFT_CYAN, 0x0180);
+    img.drawCentreString("ZOYI 703S - " + currentLabel, 240, 15, 4);
+
+    // Wyświetlacz główny
+    img.fillRoundRect(20, 55, 440, 110, 15, 0x0841); 
+    img.setTextColor(TFT_WHITE);
+    img.drawCentreString(displayValue, 243, 73, 7); 
+    img.setTextColor(0x07E0); 
+    img.drawCentreString(displayValue, 240, 70, 7); 
+    img.setTextColor(TFT_GOLD);
+    img.drawCentreString(currentUnit, 240, 135, 4);
+
+    // Pasek z gradientem
+    int barRange = 5;
+    if (abs(currentFloat) > 50.0) barRange = 500;
+    else if (abs(currentFloat) > 5.0) barRange = 50;
+    int percent = (int)((abs(currentFloat) * 100.0) / barRange);
+    
+    img.drawRect(40, 180, 400, 16, TFT_WHITE);
+    img.fillRect(42, 182, map(constrain(percent, 0, 100), 0, 100, 0, 396), 12, getGradientColor(percent));
+
+    // Statystyki dolne
+    img.fillRoundRect(20, 225, 440, 50, 10, 0x0042);
+    img.setTextColor(TFT_WHITE, 0x0042);
+    img.drawString("MIN: " + String(valMin, 3), 30, 235, 2);
+    img.drawCentreString("AVG: " + String((sampleCount==0?0:(float)(valSum/sampleCount)), 3), 240, 235, 4);
+    img.drawRightString("MAX: " + String(valMax, 3), 450, 235, 2);
+
+    img.pushSprite(0, 0);
+}
+
+// --- SERWER WWW ---
+void handleRoot() {
+    String html = R"rawliteral(
+<!DOCTYPE html><html><head><meta charset='UTF-8'>
+<style>
+    body { background: #111; color: #0f0; text-align: center; font-family: sans-serif; padding: 20px; }
+    .box { border: 4px solid #333; display: inline-block; padding: 40px; margin: 20px; border-radius: 20px; background: #000; min-width: 320px; }
+    #val { font-size: 85px; font-weight: bold; }
+    #unit { font-size: 35px; color: gold; }
+    .controls { margin: 20px 0; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+    button { padding: 12px 24px; font-size: 16px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 10px; }
+    button:hover { background: #444; border-color: cyan; }
+    #log-info { color: #888; font-size: 0.9em; }
+</style>
+</head><body>
+    <h1 id="label">ZOYI 703S PRO</h1>
+    <div class="box">
+        <div id="val">0.000</div> <span id="unit">---</span>
+    </div>
+    <div class="controls">
+        <button onclick="enableTTS()">🔊 Głos (TTS)</button>
+        <button onclick="downloadCSV()" style="border-color: #0f0;">💾 Pobierz CSV</button>
+        <button onclick="clearLogs()" style="border-color: #f00;">🗑️ Czyść</button>
+    </div>
+    <div id="log-info">Zebrano próbek: 0</div>
+<script>
+    let lastVal = "", stableTime = 0, ttsEnabled = false, lastSpoken = "", logs = [];
+    function enableTTS() { ttsEnabled = true; alert("TTS aktywny (>1V, 1s stabilny)"); }
+    function clearLogs() { if(confirm("Usunąć dane?")) { logs = []; updateLog(); } }
+    function updateLog() { document.getElementById('log-info').innerText = "Zebrano próbek: " + logs.length; }
+    
+    function downloadCSV() {
+        if(!logs.length) return alert("Brak danych!");
+        let csv = "Czas;Etykieta;Wartosc;Jednostka\n" + logs.map(e => `${e.t};${e.l};${e.v};${e.u}`).join("\n");
+        let blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+        let link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = "zoyi_data.csv";
+        link.click();
+    }
+
+    function update() {
+        fetch('/data').then(r => r.json()).then(d => {
+            document.getElementById('val').innerText = d.v;
+            document.getElementById('unit').innerText = d.u;
+            document.getElementById('label').innerText = "ZOYI 703S - " + d.l;
+            
+            let fv = parseFloat(d.v);
+            // Logowanie CSV
+            if(d.v !== lastVal && d.v !== "0.0000") {
+                logs.push({t: new Date().toLocaleTimeString(), l: d.l, v: d.v.replace('.',','), u: d.u});
+                updateLog();
+            }
+            // TTS
+            if(d.v === lastVal && fv > 1.0 && d.v !== lastSpoken) {
+                stableTime += 200;
+                if(stableTime >= 1000 && ttsEnabled) {
+                    let m = new SpeechSynthesisUtterance(d.v.replace('.',',') + " " + d.u);
+                    m.lang = 'pl-PL'; window.speechSynthesis.speak(m);
+                    lastSpoken = d.v;
+                }
+            } else { stableTime = 0; }
+            lastVal = d.v;
+        });
+    }
+    setInterval(update, 200);
+</script></body></html>)rawliteral";
+    server.send(200, "text/html", html);
+}
+
+void handleData() {
+    String json = "{\"v\":\"" + displayValue + "\",\"u\":\"" + currentUnit + "\",\"l\":\"" + currentLabel + "\",\"min\":\"" + String(valMin,3) + "\",\"max\":\"" + String(valMax,3) + "\"}";
+    server.send(200, "application/json", json);
+}
+
+// --- SETUP & LOOP ---
+void setup() {
+    Serial.begin(115200); 
+    Serial1.begin(115200, SERIAL_8N1, 18, 17); 
+    pinMode(TFT_BL, OUTPUT); digitalWrite(TFT_BL, HIGH);
+    SPI.begin(12, -1, 11, 10); 
+    tft.init();
+    
+    tft.setRotation(3); // FLIP EKRANU O 180 STOPNI
+    
+    img.setColorDepth(8); img.createSprite(480, 320);
+    WiFi.softAP(ssid_ap, pass_ap);
+    server.on("/", handleRoot);
+    server.on("/data", handleData);
+    server.begin();
+    drawUI(); 
+}
+
+void loop() {
+    server.handleClient();
+    if (Serial1.available()) {
+        while (Serial1.available()) {
+            char c = (char)Serial1.read();
+            serialBuffer += c;
+            if (serialBuffer.length() > 128) serialBuffer = serialBuffer.substring(64);
+        }
+        const char* tags[] = {"Electricity:","mAElectricity:","MOMResistance:","OMResistance:","KOMResistance:","OMbeep:","VDiode:","nFCap:","uFCap:","mFCap:","VVoltage:"};
+        for (int i = 0; i < 11; i++) {
+            int pos = serialBuffer.indexOf(tags[i]);
+            if (pos != -1) {
+                String tag = tags[i]; tag.replace(":","");
+                int off = strlen(tags[i]);
+                String sL = "Pomiar", sU = "";
+                if (tag.indexOf("Voltage")!=-1) { sL="Napiecie DC"; sU="V"; }
+                else if (tag.indexOf("Resistance")!=-1) { sL="Rezystancja"; sU="Ohm"; }
+                else if (tag.indexOf("Cap")!=-1) { sL="Pojemnosc"; sU="F"; }
+                else if (tag.indexOf("Electricity")!=-1) { sL="Prad"; sU="A"; }
+
+                int ep = serialBuffer.indexOf(" ", pos + off);
+                if (ep > (pos + off)) {
+                    String v = serialBuffer.substring(pos + off, ep); v.trim();
+                    if (v.length() > 0) {
+                        float fv = v.toFloat();
+                        if (currentLabel != sL) resetStats();
+                        if (fabs(fv - lastNumericValue) > threshold || currentLabel != sL) {
+                            displayValue = v; lastNumericValue = fv; currentFloat = fv;
+                            currentLabel = sL; currentUnit = sU;
+                            updateStats(fv); drawUI();
+                        }
+                    }
+                    serialBuffer = serialBuffer.substring(ep);
+                }
+                break;
+            }
+        }
+    }
+}
+
+```
+
 
 
 
