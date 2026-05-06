@@ -3,6 +3,8 @@
 
 Projekcik dla Zoyi703s na ESP32-s3. Czyli odczyt z UART z zoyi do esp.
 
+PS1: Jezeli ktos stworzy swojego i chcialby sie podzielic kodem z innymi to piszcie na gg 8772666. Wkleje tutaj wasze wypociny ze zdjeciami i kodem :)
+
 <img width="1126" height="2000" alt="2026-05-06_20 24 21" src="https://github.com/user-attachments/assets/ea969d2a-b950-4510-84ff-97ad5890fdcd" />
 
 Kod dla kazdego kto chce sobie poeksperymentowac ponizej:
