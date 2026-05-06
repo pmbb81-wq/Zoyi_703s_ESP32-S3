@@ -213,6 +213,17 @@ Jezeli chodzi o czytanie pomiaru na glos to jest to dopiero pierwsza wersja. Nie
 
 
 
+<h1 align="center">📋 INCOMING: CSV</h1>
+
+<img width="703" height="521" alt="Screenshot 2026-05-06 at 21-35-24 " src="https://github.com/user-attachments/assets/fa58f5b9-c33e-4056-b0ea-7c9e36838056" />
+
+
+<img width="1126" height="2000" alt="2026-05-06_21 33 17" src="https://github.com/user-attachments/assets/15d97e63-cdeb-4846-ad01-f7cef7b53ea8" />
+
+
+
+
+
 
 
 
